@@ -1,0 +1,32 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Interview {
+  id          String     @id @default(uuid())
+  resumeText  String
+  status      String
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  questions   Question[]
+}
+
+model Question {
+  id                 String    @id @default(uuid())
+  interviewId        String
+  interview          Interview @relation(fields: [interviewId], references: [id])
+  questionText       String
+  answerText         String?
+  technicalScore     Int?
+  communicationScore Int?
+  experienceScore    Int?
+  feedback           String?
+  followUpCount      Int       @default(0)
+  isCompleted        Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+}
