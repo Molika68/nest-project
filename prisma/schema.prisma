@@ -8,12 +8,13 @@ datasource db {
 }
 
 model Interview {
-  id          String     @id @default(uuid())
-  resumeText  String
-  status      String
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  questions   Question[]
+  id                   String     @id @default(uuid())
+  resumeText           String
+  status               String
+  extractedTechSkills String     @default("[]")
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+  questions            Question[]
 }
 
 model Question {
@@ -21,10 +22,12 @@ model Question {
   interviewId        String
   interview          Interview @relation(fields: [interviewId], references: [id])
   questionText       String
+  techSkills         String    @default("[]")
   answerText         String?
   technicalScore     Int?
-  communicationScore Int?
+  communicationScore  Int?
   experienceScore    Int?
+  techSkillScores    String    @default("{}")
   feedback           String?
   followUpCount      Int       @default(0)
   isCompleted        Boolean   @default(false)

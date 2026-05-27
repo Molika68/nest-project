@@ -3,7 +3,7 @@
  * @description 面试 API 控制器，提供面试相关的 REST 接口
  */
 
-import { Controller, Post, Get, Param, Body, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Controller, Post, Get, Param, Body, UploadedFile, UseInterceptors, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { InterviewService } from './interview.service';
 import { SubmitAnswerDto } from './dto/submit-answer.dto';
@@ -24,6 +24,9 @@ export class InterviewController {
   @Post('start')
   @UseInterceptors(FileInterceptor('resume'))
   async startInterview(@UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('请上传简历文件');
+    }
     return this.interviewService.startInterview(file.buffer);
   }
 

@@ -20,6 +20,8 @@ export interface StartInterviewResponse {
     id: string;
     questionText: string;
   };
+  /** 从简历中提取的技术栈列表 */
+  extractedTechSkills: string[];
 }
 
 /**
@@ -40,7 +42,20 @@ export interface SubmitAnswerResponse {
     communicationScore: number;
     experienceScore: number;
     feedback: string;
+    /** 技术栈评分（如 {"React": 85, "Vue": 78}） */
+    techSkillScores?: Record<string, number>;
   };
+}
+
+/**
+ * @interface SkillItem
+ * @description 技能指标项（用于雷达图）
+ */
+export interface SkillItem {
+  /** 技能名称 */
+  name: string;
+  /** 技能得分 */
+  score: number;
 }
 
 /**
@@ -56,6 +71,8 @@ export interface InterviewResult {
   experienceScore: number;
   /** AI 生成的综合评价 */
   summary: string;
+  /** 动态技能评分维度（用于雷达图） */
+  skills: SkillItem[];
   /** 所有面试问题和回答记录 */
   questions: Array<{
     id: string;
@@ -65,6 +82,10 @@ export interface InterviewResult {
     communicationScore?: number | null;
     experienceScore?: number | null;
     feedback?: string | null;
+    /** 该问题涉及的技术栈 */
+    techSkills?: string[];
+    /** 技术栈评分 */
+    techSkillScores?: Record<string, number>;
     createdAt: Date;
   }>;
 }
@@ -90,17 +111,28 @@ export class InterviewService {
     // 1. 解析简历 PDF
     const resumeText = await this.resumeService.parsePdf(fileBuffer);
 
-    // 2. 创建面试记录
+    // 2. 提取简历中的技术栈关键词
+    const extractedTechSkills = this.resumeService.extractSkills(resumeText);
+
+    // 3. 创建面试记录（包含提取的技术栈）
     const interview = await this.prisma.interview.create({
-      data: { resumeText, status: 'active' },
+      data: {
+        resumeText,
+        status: 'active',
+        extractedTechSkills: JSON.stringify(extractedTechSkills),
+      },
     });
 
-    // 3. 调用 AI 生成第一道面试题
-    const questionText = await this.aiService.generateQuestion(resumeText, 1);
+    // 4. 调用 AI 生成第一道面试题
+    const questionResult = await this.aiService.generateQuestion(resumeText, 1);
 
-    // 4. 创建问题记录
+    // 5. 创建问题记录（记录涉及的技术栈）
     const question = await this.prisma.question.create({
-      data: { interviewId: interview.id, questionText },
+      data: {
+        interviewId: interview.id,
+        questionText: questionResult.questionText,
+        techSkills: JSON.stringify(questionResult.techSkills),
+      },
     });
 
     return {
@@ -109,6 +141,7 @@ export class InterviewService {
         id: question.id,
         questionText: question.questionText,
       },
+      extractedTechSkills,
     };
   }
 
@@ -131,13 +164,24 @@ export class InterviewService {
       return { type: 'finished' };
     }
 
-    // 2. 调用 AI 评估回答
+    // 2. 获取该问题涉及的技术栈
+    let techSkills: string[] = [];
+    if (currentQuestion.techSkills) {
+      try {
+        techSkills = JSON.parse(currentQuestion.techSkills);
+      } catch {
+        techSkills = [];
+      }
+    }
+
+    // 3. 调用 AI 评估回答（传入技术栈用于专项评分）
     const evaluation = await this.aiService.evaluateAnswer(
       currentQuestion.questionText,
       answer,
+      techSkills,
     );
 
-    // 3. 更新问题记录（保存回答和评分）
+    // 4. 更新问题记录（保存回答、评分和技术栈评分）
     await this.prisma.question.update({
       where: { id: currentQuestion.id },
       data: {
@@ -146,6 +190,7 @@ export class InterviewService {
         communicationScore: evaluation.communicationScore,
         experienceScore: evaluation.experienceScore,
         feedback: evaluation.feedback,
+        techSkillScores: JSON.stringify(evaluation.techSkillScores || {}),
         followUpCount: currentQuestion.followUpCount + 1,
       },
     });
@@ -157,10 +202,12 @@ export class InterviewService {
         answer,
       );
 
+      // 追问不生成新技术栈，使用原问题的技术栈
       const followUpQuestion = await this.prisma.question.create({
         data: {
           interviewId,
           questionText: followUpQuestionText,
+          techSkills: currentQuestion.techSkills || '[]',
         },
       });
 
@@ -175,7 +222,9 @@ export class InterviewService {
     }
 
     // 5. 检查是否已完成 5 道题
-    const questionCount = await this.prisma.question.count({ where: { interviewId } });
+    const questionCount = await this.prisma.question.count({
+      where: { interviewId },
+    });
 
     if (questionCount >= 5) {
       // 更新面试状态为已完成
@@ -199,13 +248,17 @@ export class InterviewService {
       return { type: 'finished', evaluation };
     }
 
-    const nextQuestionText = await this.aiService.generateQuestion(
+    const nextQuestionResult = await this.aiService.generateQuestion(
       interview.resumeText,
       questionCount + 1,
     );
 
     const nextQuestion = await this.prisma.question.create({
-      data: { interviewId, questionText: nextQuestionText },
+      data: {
+        interviewId,
+        questionText: nextQuestionResult.questionText,
+        techSkills: JSON.stringify(nextQuestionResult.techSkills),
+      },
     });
 
     return {
@@ -232,16 +285,49 @@ export class InterviewService {
 
     // 2. 计算各维度平均分
     const avgTechnical = this.calculateAverage(
-      questions.map((q) => q.technicalScore || 0)
+      questions.map((q) => q.technicalScore || 0),
     );
     const avgCommunication = this.calculateAverage(
-      questions.map((q) => q.communicationScore || 0)
+      questions.map((q) => q.communicationScore || 0),
     );
     const avgExperience = this.calculateAverage(
-      questions.map((q) => q.experienceScore || 0)
+      questions.map((q) => q.experienceScore || 0),
     );
 
-    // 3. 调用 AI 生成综合评价
+    // 3. 收集动态技能评分（仅包含被问到且有评分的技术栈）
+    const techSkillMap = new Map<string, number[]>();
+
+    for (const q of questions) {
+      if (q.techSkillScores) {
+        try {
+          const scores = JSON.parse(q.techSkillScores) as Record<
+            string,
+            number
+          >;
+          Object.entries(scores).forEach(([skill, score]) => {
+            if (!techSkillMap.has(skill)) {
+              techSkillMap.set(skill, []);
+            }
+            techSkillMap.get(skill)!.push(score);
+          });
+        } catch {
+          // 忽略解析错误
+        }
+      }
+    }
+
+    // 计算每个技术栈的平均分
+    const dynamicSkills: SkillItem[] = [];
+    techSkillMap.forEach((scores, skill) => {
+      if (scores.length > 0) {
+        dynamicSkills.push({
+          name: skill,
+          score: this.calculateAverage(scores),
+        });
+      }
+    });
+
+    // 4. 调用 AI 生成综合评价
     const summary = await this.aiService.generateSummary(questions);
 
     return {
@@ -249,16 +335,40 @@ export class InterviewService {
       communicationScore: avgCommunication,
       experienceScore: avgExperience,
       summary,
-      questions: questions.map((q) => ({
-        id: q.id,
-        questionText: q.questionText,
-        answerText: q.answerText,
-        technicalScore: q.technicalScore,
-        communicationScore: q.communicationScore,
-        experienceScore: q.experienceScore,
-        feedback: q.feedback,
-        createdAt: q.createdAt,
-      })),
+      skills: dynamicSkills,
+      questions: questions.map((q) => {
+        let techSkills: string[] = [];
+        let techSkillScores: Record<string, number> = {};
+
+        if (q.techSkills) {
+          try {
+            techSkills = JSON.parse(q.techSkills);
+          } catch {
+            techSkills = [];
+          }
+        }
+
+        if (q.techSkillScores) {
+          try {
+            techSkillScores = JSON.parse(q.techSkillScores);
+          } catch {
+            techSkillScores = {};
+          }
+        }
+
+        return {
+          id: q.id,
+          questionText: q.questionText,
+          answerText: q.answerText,
+          technicalScore: q.technicalScore,
+          communicationScore: q.communicationScore,
+          experienceScore: q.experienceScore,
+          feedback: q.feedback,
+          techSkills,
+          techSkillScores,
+          createdAt: q.createdAt,
+        };
+      }),
     };
   }
 

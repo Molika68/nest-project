@@ -24,6 +24,19 @@ export interface EvaluationResult {
   feedback: string;
   /** 三项得分的平均值 */
   averageScore: number;
+  /** 该问题涉及的技术栈评分（动态维度，如 {"React": 85, "Vue": 78}） */
+  techSkillScores?: Record<string, number>;
+}
+
+/**
+ * @interface QuestionResult
+ * @description 生成的面试题结果
+ */
+export interface QuestionResult {
+  /** 面试题文本 */
+  questionText: string;
+  /** 该问题涉及的技术栈列表 */
+  techSkills: string[];
 }
 
 /**
@@ -86,12 +99,12 @@ export class AiService {
    * @description 根据简历内容生成面试题
    * @param resumeText - 简历文本内容
    * @param questionCount - 当前题目序号（第几题）
-   * @returns Promise<string> - 生成的面试题
+   * @returns Promise<QuestionResult> - 生成的面试题及涉及的技术栈
    */
   async generateQuestion(
     resumeText: string,
     questionCount: number,
-  ): Promise<string> {
+  ): Promise<QuestionResult> {
     // 提取简历中的技能关键词
     const skills = this.extractSkillsFromResume(resumeText);
     const skillStr =
@@ -108,10 +121,63 @@ ${resumeText.slice(0, 1000)}
 2. 难度适中，能考察实际工作能力
 3. 问题要具体，避免过于宽泛
 4. 语言简洁清晰，使用中文提问
+5. 如果问题涉及特定技术栈，请在回答最后用 【技术栈：xxx】 格式标注
+
+请按以下 JSON 格式输出：
+{
+  "question": "面试题内容",
+  "techSkills": ["React", "Vue"] // 该问题涉及的技术栈，没有则为空数组
+}
     `.trim();
 
     const result = await this.getResponseContent(prompt);
-    return result || this.generateFallbackQuestion(questionCount);
+    if (!result) {
+      return {
+        questionText: this.generateFallbackQuestion(questionCount),
+        techSkills: [],
+      };
+    }
+
+    return this.parseQuestionResult(result, skills);
+  }
+
+  /**
+   * @description 解析 AI 返回的题目 JSON
+   * @param content - AI 响应内容
+   * @param resumeSkills - 简历中的技术栈（用于兜底）
+   * @returns QuestionResult - 解析后的题目结果
+   */
+  private parseQuestionResult(
+    content: string,
+    resumeSkills: string[],
+  ): QuestionResult {
+    try {
+      // 提取 JSON 部分
+      const jsonStr = content.match(/\{[\s\S]*\}/);
+      if (jsonStr) {
+        const result = JSON.parse(jsonStr[0]);
+        return {
+          questionText: result.question || content,
+          techSkills: Array.isArray(result.techSkills)
+            ? result.techSkills.filter((s: string) =>
+                resumeSkills.some((rs) => rs.toLowerCase() === s.toLowerCase()),
+              )
+            : [],
+        };
+      }
+    } catch (error) {
+      console.error('解析题目结果失败:', error);
+    }
+
+    // 解析失败时尝试从内容中提取技术栈
+    const foundSkills = resumeSkills.filter((skill) =>
+      content.toLowerCase().includes(skill.toLowerCase()),
+    );
+
+    return {
+      questionText: content,
+      techSkills: foundSkills,
+    };
   }
 
   /**
@@ -142,17 +208,31 @@ ${resumeText.slice(0, 1000)}
    * @description 对面试回答进行多维度评分
    * @param question - 面试题
    * @param answer - 面试者的回答
+   * @param techSkills - 该问题涉及的技术栈列表（用于针对性评分）
    * @returns Promise<EvaluationResult> - 评分结果
    */
   async evaluateAnswer(
     question: string,
     answer: string,
+    techSkills: string[] = [],
   ): Promise<EvaluationResult> {
+    let techSkillScores: Record<string, number> = {};
+
+    // 如果问题涉及技术栈，则增加技术栈专项评分
+    if (techSkills.length > 0) {
+      techSkillScores = await this.evaluateTechSkillScores(
+        question,
+        answer,
+        techSkills,
+      );
+    }
+
     const prompt = `
 请对以下面试回答进行评分（每项 0-100 分）：
 
 问题：${question}
 回答：${answer}
+${techSkills.length > 0 ? `涉及技术栈：${techSkills.join('、')}` : ''}
 
 评分维度：
 1. 技术深度：回答的专业性、技术准确性、对问题本质的理解
@@ -177,9 +257,78 @@ ${resumeText.slice(0, 1000)}
         experienceScore: 50,
         feedback: '无法获取 AI 评价，已使用默认评分',
         averageScore: 50,
+        techSkillScores,
       };
     }
-    return this.parseEvaluation(result);
+
+    const evaluation = this.parseEvaluation(result);
+    evaluation.techSkillScores = techSkillScores;
+    return evaluation;
+  }
+
+  /**
+   * @description 对涉及的技术栈进行专项评分
+   * @param question - 面试题
+   * @param answer - 面试者的回答
+   * @param techSkills - 技术栈列表
+   * @returns Promise<Record<string, number>> - 各技术栈评分
+   */
+  private async evaluateTechSkillScores(
+    question: string,
+    answer: string,
+    techSkills: string[],
+  ): Promise<Record<string, number>> {
+    const scores: Record<string, number> = {};
+
+    const prompt = `
+请针对以下面试回答中涉及的技术栈进行专项评分（每项 0-100 分）：
+
+问题：${question}
+回答：${answer}
+涉及技术栈：${techSkills.join('、')}
+
+请评估面试者对每个技术栈的掌握程度，按以下 JSON 格式输出：
+{
+  ${techSkills.map((s) => `"${s}": 分数`).join(',\n  ')}
+}
+
+评分标准：
+- 90-100：对技术原理有深入理解，能解释底层机制，有实际项目经验
+- 70-89：对技术使用熟练，有一定项目经验
+- 50-69：了解基本用法，但缺乏深度
+- 50 以下：回答不准确或与事实不符
+    `.trim();
+
+    const result = await this.getResponseContent(prompt);
+    if (!result) {
+      // 返回默认评分
+      techSkills.forEach((skill) => {
+        scores[skill] = 50;
+      });
+      return scores;
+    }
+
+    try {
+      const jsonStr = result.match(/\{[\s\S]*\}/);
+      if (jsonStr) {
+        const parsed = JSON.parse(jsonStr[0]);
+        techSkills.forEach((skill) => {
+          // 尝试多种匹配方式
+          const normalizedSkill = skill.toLowerCase();
+          const key = Object.keys(parsed).find(
+            (k) => k.toLowerCase() === normalizedSkill,
+          );
+          scores[skill] = key ? parsed[key] : 50;
+        });
+      }
+    } catch (error) {
+      console.error('解析技术栈评分失败:', error);
+      techSkills.forEach((skill) => {
+        scores[skill] = 50;
+      });
+    }
+
+    return scores;
   }
 
   /**
