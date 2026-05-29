@@ -181,7 +181,7 @@ export class InterviewService {
       techSkills,
     );
 
-    // 4. 更新问题记录（保存回答、评分和技术栈评分）
+    // 4. 更新问题记录（保存回答、评分和技术栈评分，并标记为已完成）
     await this.prisma.question.update({
       where: { id: currentQuestion.id },
       data: {
@@ -192,6 +192,7 @@ export class InterviewService {
         feedback: evaluation.feedback,
         techSkillScores: JSON.stringify(evaluation.techSkillScores || {}),
         followUpCount: currentQuestion.followUpCount + 1,
+        isCompleted: true, // 标记问题已完成
       },
     });
 
@@ -201,6 +202,12 @@ export class InterviewService {
         currentQuestion.questionText,
         answer,
       );
+
+      // 将原问题标记为已完成
+      await this.prisma.question.update({
+        where: { id: currentQuestion.id },
+        data: { isCompleted: true },
+      });
 
       // 追问不生成新技术栈，使用原问题的技术栈
       const followUpQuestion = await this.prisma.question.create({
@@ -239,7 +246,7 @@ export class InterviewService {
       };
     }
 
-    // 6. 生成下一道面试题
+    // 6. 生成下一道面试题（传入历史记录避免重复）
     const interview = await this.prisma.interview.findUnique({
       where: { id: interviewId },
     });
@@ -248,9 +255,16 @@ export class InterviewService {
       return { type: 'finished', evaluation };
     }
 
+    // 获取之前的问答历史
+    const historyQuestions = await this.prisma.question.findMany({
+      where: { interviewId },
+      orderBy: { createdAt: 'asc' },
+    });
+
     const nextQuestionResult = await this.aiService.generateQuestion(
       interview.resumeText,
       questionCount + 1,
+      historyQuestions,
     );
 
     const nextQuestion = await this.prisma.question.create({

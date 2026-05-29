@@ -4,7 +4,7 @@ generator client {
 
 datasource db {
   provider = "sqlite"
-  url      = env("DATABASE_URL")
+  // 连接URL已移至prisma.config.ts，此处不再需要url属性
 }
 
 model Interview {

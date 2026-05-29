@@ -40,6 +40,19 @@ export interface QuestionResult {
 }
 
 /**
+ * @interface QuestionHistory
+ * @description 历史问题记录（用于避免重复提问）
+ */
+interface QuestionHistory {
+  /** 问题文本 */
+  questionText: string;
+  /** 回答文本 */
+  answerText: string | null;
+  /** 问题涉及的技术栈 */
+  techSkills: string;
+}
+
+/**
  * @class AiService
  * @description AI 服务类，封装 LangChain 调用逻辑
  */
@@ -99,16 +112,59 @@ export class AiService {
    * @description 根据简历内容生成面试题
    * @param resumeText - 简历文本内容
    * @param questionCount - 当前题目序号（第几题）
+   * @param historyQuestions - 之前的问答历史（用于避免重复提问）
    * @returns Promise<QuestionResult> - 生成的面试题及涉及的技术栈
    */
   async generateQuestion(
     resumeText: string,
     questionCount: number,
+    historyQuestions: QuestionHistory[] = [],
   ): Promise<QuestionResult> {
     // 提取简历中的技能关键词
     const skills = this.extractSkillsFromResume(resumeText);
     const skillStr =
       skills.length > 0 ? `（相关技能：${skills.join('、')}）` : '';
+
+    // 构建历史问题描述（用于避免重复）
+    const historyContext =
+      historyQuestions.length > 0
+        ? `\n\n已经问过的问题（请勿重复或过于相似）：\n${historyQuestions
+            .map(
+              (q, i) =>
+                `${i + 1}. ${q.questionText}${q.techSkills ? `【技术栈：${q.techSkills}】` : ''}`,
+            )
+            .join('\n')}`
+        : '';
+
+    // 根据题目序号选择不同类型的题目
+    const questionTypes = [
+      '技术原理', // 第1题：考察基础原理
+      '实践经验', // 第2题：考察项目经验
+      '问题解决', // 第3题：考察问题解决能力
+      '架构设计', // 第4题：考察架构思维
+      '综合评价', // 第5题：综合考察
+    ];
+
+    // 如果题目序号超过5，随机选择类型
+    const typeIndex =
+      questionCount <= questionTypes.length
+        ? questionCount - 1
+        : Math.floor(Math.random() * questionTypes.length);
+    const questionType = questionTypes[typeIndex];
+
+    // 根据题目类型生成不同的提问方向
+    const typePrompts: Record<string, string> = {
+      技术原理:
+        '请从原理层面深入考察，例如框架的核心机制、设计模式、底层实现原理等',
+      实践经验:
+        '请围绕实际项目经验提问，例如具体的项目案例、遇到的挑战、解决方案等',
+      问题解决:
+        '请考察问题排查和解决能力，例如性能优化、Bug修复、技术难题解决等',
+      架构设计: '请从架构层面提问，例如系统设计、技术选型、架构决策等',
+      综合评价: '请综合考察候选人的技术能力、项目经验和职业发展规划',
+    };
+
+    const typePrompt = typePrompts[questionType] || '';
 
     const prompt = `
 请根据以下简历内容生成第 ${questionCount} 道面试题${skillStr}：
@@ -116,12 +172,18 @@ export class AiService {
 简历内容：
 ${resumeText.slice(0, 1000)}
 
+题目类型：${questionType}
+${typePrompt}
+
 要求：
 1. 问题要与简历中提到的技术栈或项目经验相关
 2. 难度适中，能考察实际工作能力
 3. 问题要具体，避免过于宽泛
 4. 语言简洁清晰，使用中文提问
-5. 如果问题涉及特定技术栈，请在回答最后用 【技术栈：xxx】 格式标注
+5. 必须与之前的问题不同，避免重复
+6. 如果问题涉及特定技术栈，请在回答最后用 【技术栈：xxx】 格式标注
+
+${historyContext}
 
 请按以下 JSON 格式输出：
 {
