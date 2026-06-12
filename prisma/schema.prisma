@@ -1,10 +1,10 @@
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
   provider = "sqlite"
-  // 连接URL已移至prisma.config.ts，此处不再需要url属性
 }
 
 model Interview {

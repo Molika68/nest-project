@@ -4,7 +4,8 @@
  */
 
 import { Injectable, OnModuleInit } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '../generated/prisma/client';
+import { PrismaLibSql } from '@prisma/adapter-libsql';
 
 /**
  * @class PrismaService
@@ -12,6 +13,18 @@ import { PrismaClient } from '@prisma/client';
  */
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit {
+  constructor() {
+    const url =
+      process.env.TURSO_DATABASE_URL ?? 'file:./prisma/dev.db';
+    const authToken = process.env.TURSO_AUTH_TOKEN;
+
+    const adapter = new PrismaLibSql(
+      authToken ? { url, authToken } : { url },
+    );
+
+    super({ adapter });
+  }
+
   /**
    * @description 模块初始化时自动连接数据库
    */
